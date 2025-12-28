@@ -3,9 +3,7 @@ import sqlite3
 import numpy as np
 import pandas as pd
 import yfinance as yf
-import plotly.graph_objects as go
 import plotly.express as px
-from plotly.subplots import make_subplots
 import streamlit as st
 from arch import arch_model
 
@@ -13,7 +11,7 @@ from arch import arch_model
 # Configuration
 # -------------------------------------------------------------------
 DB_NAME = "mtn_volatility.db"
-DEFAULT_TICKER = "MTNOY"
+DEFAULT_TICKER = "AAPL"
 
 st.set_page_config(
     page_title="Stock Volatility Forecaster",
@@ -22,7 +20,7 @@ st.set_page_config(
 )
 
 # -------------------------------------------------------------------
-# Database functions (FIXED column names)
+# Database functions
 # -------------------------------------------------------------------
 def get_connection():
     return sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -37,15 +35,13 @@ def read_table(connection, table_name):
     return df
 
 # -------------------------------------------------------------------
-# Yahoo Finance (FIXED)
+# Yahoo Finance + CLEANING (FIXED)
 # -------------------------------------------------------------------
 @st.cache_data
 def download_stock_data_cached(_ticker):
-    """Download from Yahoo Finance - correct column names"""
     ticker = yf.Ticker(_ticker)
     df = ticker.history(period="5y", interval="1d")
     
-    # Reset index to make Date a column, then standardize names
     df = df.reset_index()
     df = df.rename(columns={
         'Date': 'date',
@@ -56,21 +52,43 @@ def download_stock_data_cached(_ticker):
         'Volume': 'volume'
     })
     df = df.set_index('date')
-    df.index.name = 'date'
     
-    return df[['open', 'high', 'low', 'close', 'volume']]
+    # CRITICAL: Convert to numeric + drop NaNs
+    numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    df = df[numeric_cols].dropna()
+    return df
 
 @st.cache_data
 def wrangle_returns_cached(_prices, _n_obs):
-    df = _prices.sort_index()
+    df = _prices.sort_index().copy()
+    
+    # CRITICAL CLEANING: Ensure close is numeric
+    df['close'] = pd.to_numeric(df['close'], errors='coerce')
+    df = df.dropna(subset=['close'])
+    
+    # Calculate returns
     df["return"] = df["close"].pct_change() * 100
+    
+    # Remove NaNs and infinities
     y = df["return"].dropna()
-    return y.iloc[-_n_obs:]
+    y = y[np.isfinite(y)]  # Remove inf, -inf, NaN
+    
+    return y.iloc[-_n_obs:].astype(float)
 
 # -------------------------------------------------------------------
-# GARCH model
+# GARCH model (with validation)
 # -------------------------------------------------------------------
 def fit_garch_model(y, p=1, q=1):
+    # Final validation
+    y = y.dropna().astype(float)
+    y = y[np.isfinite(y)]
+    
+    if len(y) < 100:
+        raise ValueError(f"Need 100+ observations. Got {len(y)}")
+    
     model = arch_model(y, p=p, q=q, rescale=False)
     fitted = model.fit(disp="off")
     return fitted
@@ -79,11 +97,11 @@ def fit_garch_model(y, p=1, q=1):
 # Main app
 # -------------------------------------------------------------------
 st.title("📈 Stock Volatility Forecaster")
-st.markdown("**GARCH volatility analysis using Yahoo Finance data (works for ANY ticker)**")
+st.markdown("**GARCH(1,1) volatility analysis - Yahoo Finance data**")
 
 # Sidebar
 st.sidebar.header("⚙️ Settings")
-ticker = st.sidebar.text_input("Stock ticker", value="AAPL")  # Start with AAPL
+ticker = st.sidebar.text_input("Stock ticker", value=DEFAULT_TICKER)
 use_new_data = st.sidebar.checkbox("Download fresh data", value=True)
 n_obs = st.sidebar.slider("Observations", 500, 3000, 2500)
 p_order = st.sidebar.slider("GARCH p", 0, 3, 1)
@@ -98,11 +116,12 @@ tab1, tab2, tab3 = st.tabs(["🏠 Home", "📊 Analysis", "⚙️ Model Details"
 
 with tab1:
     st.markdown("""
-    ### What this app does:
-    - Downloads **5 years** of stock data from Yahoo Finance
-    - Calculates **daily % price changes** (returns)
-    - Fits **GARCH model** to measure volatility clustering
-    - Shows **daily + annual risk** estimates
+    ### How it works:
+    1. Downloads **5y stock data** from Yahoo Finance
+    2. Computes **daily returns** (% price changes) 
+    3. Cleans **NaNs/infinities**
+    4. Fits **GARCH(p,q)** model
+    5. Shows **volatility metrics**
     """)
     
     if st.button("🚀 Run Analysis", type="primary"):
@@ -110,16 +129,18 @@ with tab1:
             conn = get_connection()
             try:
                 if use_new_data:
-                    with st.status("📥 Downloading from Yahoo...", expanded=False):
+                    with st.status("📥 Downloading data...", expanded=False):
                         prices = download_stock_data_cached(ticker)
                         insert_table(conn, ticker, prices)
-                        st.success(f"✅ Downloaded {len(prices):,} days of {ticker}")
+                        st.success(f"✅ {len(prices):,} clean days of {ticker}")
                 
-                with st.status("📊 Processing returns...", expanded=False):
+                with st.status("📊 Computing returns...", expanded=False):
                     prices = read_table(conn, ticker)
                 
                 with st.status("🔄 Fitting GARCH model...", expanded=False):
                     returns = wrangle_returns_cached(prices, n_obs)
+                    st.info(f"✅ Using {len(returns):,} returns for modeling")
+                    
                     model = fit_garch_model(returns, p_order, q_order)
                     
                     daily_vol = returns.std()
@@ -135,7 +156,6 @@ with tab1:
                     with col4:
                         st.metric("Model BIC", f"{model.bic:.1f}")
                     
-                    # Store results
                     st.session_state.model = model
                     st.session_state.returns = returns
                     st.session_state.prices = prices
@@ -143,23 +163,26 @@ with tab1:
                     
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
-                st.info("💡 Try: AAPL, MSFT, TSLA, GOOGL, AMZN")
+                st.info("💡 Try AAPL, MSFT, TSLA")
             finally:
                 conn.close()
 
 with tab2:
     if 'model' in st.session_state:
-        st.subheader(f"Recent Returns - {st.session_state.ticker}")
+        st.subheader(f"Returns - {st.session_state.ticker}")
         fig1 = px.line(st.session_state.returns.tail(200), 
                       title="Daily Returns (%)")
         st.plotly_chart(fig1, use_container_width=True)
         
-        st.subheader("GARCH Standardized Residuals")
-        residuals = st.session_state.model.std_resid
-        fig2 = px.line(residuals.tail(200), title="Model Residuals")
+        st.subheader("GARCH Residuals")
+        residuals = st.session_state.model.std_resid.tail(200)
+        fig2 = px.line(residuals, title="Standardized Residuals")
         st.plotly_chart(fig2, use_container_width=True)
 
 with tab3:
     if 'model' in st.session_state:
         st.subheader("GARCH Model Summary")
         st.text(st.session_state.model.summary().as_text())
+
+st.markdown("---")
+st.markdown("*WQU Lab 8.5 → Production GARCH App* [file:1]")
