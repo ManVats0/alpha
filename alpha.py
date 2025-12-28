@@ -16,13 +16,13 @@ DB_NAME = "mtn_volatility.db"
 DEFAULT_TICKER = "MTNOY"
 
 st.set_page_config(
-    page_title="MTN Volatility Forecaster",
+    page_title="Stock Volatility Forecaster",
     page_icon="📈",
     layout="wide"
 )
 
 # -------------------------------------------------------------------
-# Database functions
+# Database functions (FIXED column names)
 # -------------------------------------------------------------------
 def get_connection():
     return sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -33,21 +33,32 @@ def insert_table(connection, table_name, df):
 
 def read_table(connection, table_name):
     query = f"SELECT * FROM {table_name};"
-    df = pd.read_sql(query, connection, parse_dates=["Date"], index_col="Date")
+    df = pd.read_sql(query, connection, parse_dates=["date"], index_col="date")
     return df
 
 # -------------------------------------------------------------------
-# FREE Yahoo Finance (no API key needed!)
+# Yahoo Finance (FIXED)
 # -------------------------------------------------------------------
 @st.cache_data
 def download_stock_data_cached(_ticker):
-    """Download from Yahoo Finance - works everywhere"""
+    """Download from Yahoo Finance - correct column names"""
     ticker = yf.Ticker(_ticker)
-    df = ticker.history(period="5y", interval="1d")  # 5 years data
-    df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
-    df.columns = ['open', 'high', 'low', 'close', 'volume']
+    df = ticker.history(period="5y", interval="1d")
+    
+    # Reset index to make Date a column, then standardize names
+    df = df.reset_index()
+    df = df.rename(columns={
+        'Date': 'date',
+        'Open': 'open', 
+        'High': 'high',
+        'Low': 'low',
+        'Close': 'close',
+        'Volume': 'volume'
+    })
+    df = df.set_index('date')
     df.index.name = 'date'
-    return df
+    
+    return df[['open', 'high', 'low', 'close', 'volume']]
 
 @st.cache_data
 def wrangle_returns_cached(_prices, _n_obs):
@@ -68,11 +79,11 @@ def fit_garch_model(y, p=1, q=1):
 # Main app
 # -------------------------------------------------------------------
 st.title("📈 Stock Volatility Forecaster")
-st.markdown("**How jumpy is any stock's price? Uses GARCH model on Yahoo Finance data (no API key needed).**")
+st.markdown("**GARCH volatility analysis using Yahoo Finance data (works for ANY ticker)**")
 
 # Sidebar
 st.sidebar.header("⚙️ Settings")
-ticker = st.sidebar.text_input("Stock ticker", value=DEFAULT_TICKER)
+ticker = st.sidebar.text_input("Stock ticker", value="AAPL")  # Start with AAPL
 use_new_data = st.sidebar.checkbox("Download fresh data", value=True)
 n_obs = st.sidebar.slider("Observations", 500, 3000, 2500)
 p_order = st.sidebar.slider("GARCH p", 0, 3, 1)
@@ -88,10 +99,10 @@ tab1, tab2, tab3 = st.tabs(["🏠 Home", "📊 Analysis", "⚙️ Model Details"
 with tab1:
     st.markdown("""
     ### What this app does:
-    - **Downloads FREE stock data** from Yahoo Finance (works for ANY ticker)
-    - **Calculates daily % changes** (returns) 
-    - **Fits GARCH model** to measure changing volatility
-    - **Shows daily + annual risk** estimates
+    - Downloads **5 years** of stock data from Yahoo Finance
+    - Calculates **daily % price changes** (returns)
+    - Fits **GARCH model** to measure volatility clustering
+    - Shows **daily + annual risk** estimates
     """)
     
     if st.button("🚀 Run Analysis", type="primary"):
@@ -102,12 +113,12 @@ with tab1:
                     with st.status("📥 Downloading from Yahoo...", expanded=False):
                         prices = download_stock_data_cached(ticker)
                         insert_table(conn, ticker, prices)
-                        st.success(f"✅ Got {len(prices):,} days of {ticker}")
+                        st.success(f"✅ Downloaded {len(prices):,} days of {ticker}")
                 
-                with st.status("📊 Processing...", expanded=False):
+                with st.status("📊 Processing returns...", expanded=False):
                     prices = read_table(conn, ticker)
                 
-                with st.status("🔄 Fitting GARCH...", expanded=False):
+                with st.status("🔄 Fitting GARCH model...", expanded=False):
                     returns = wrangle_returns_cached(prices, n_obs)
                     model = fit_garch_model(returns, p_order, q_order)
                     
@@ -120,28 +131,30 @@ with tab1:
                     with col2:
                         st.metric("Annual Volatility", f"{annual_vol:.2f}%")
                     with col3:
-                        st.metric("AIC", f"{model.aic:.1f}")
+                        st.metric("Model AIC", f"{model.aic:.1f}")
                     with col4:
-                        st.metric("BIC", f"{model.bic:.1f}")
+                        st.metric("Model BIC", f"{model.bic:.1f}")
                     
+                    # Store results
                     st.session_state.model = model
                     st.session_state.returns = returns
                     st.session_state.prices = prices
+                    st.session_state.ticker = ticker
                     
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
-                st.info("💡 Try AAPL, MSFT, or TSLA - Yahoo tickers work best")
+                st.info("💡 Try: AAPL, MSFT, TSLA, GOOGL, AMZN")
             finally:
                 conn.close()
 
 with tab2:
     if 'model' in st.session_state:
-        st.subheader("Recent Returns")
+        st.subheader(f"Recent Returns - {st.session_state.ticker}")
         fig1 = px.line(st.session_state.returns.tail(200), 
                       title="Daily Returns (%)")
         st.plotly_chart(fig1, use_container_width=True)
         
-        st.subheader("GARCH Residuals")
+        st.subheader("GARCH Standardized Residuals")
         residuals = st.session_state.model.std_resid
         fig2 = px.line(residuals.tail(200), title="Model Residuals")
         st.plotly_chart(fig2, use_container_width=True)
@@ -150,6 +163,3 @@ with tab3:
     if 'model' in st.session_state:
         st.subheader("GARCH Model Summary")
         st.text(st.session_state.model.summary().as_text())
-
-st.markdown("---")
-st.markdown("*WQU Lab 8.5 → Yahoo Finance + GARCH*")
