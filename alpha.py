@@ -24,10 +24,10 @@ st.set_page_config(
 )
 
 # -------------------------------------------------------------------
-# Database functions
+# Database functions (NO CACHING on connection)
 # -------------------------------------------------------------------
-@st.cache_data
 def get_connection():
+    """Create fresh connection every time - no caching"""
     return sqlite3.connect(DB_NAME, check_same_thread=False)
 
 def insert_table(connection, table_name, df):
@@ -40,14 +40,16 @@ def read_table(connection, table_name):
     return df
 
 # -------------------------------------------------------------------
-# Data functions (same as notebook)
+# Cached data functions (ONLY pure data)
 # -------------------------------------------------------------------
-def download_stock_data(ticker, output_size="full"):
+@st.cache_data
+def download_stock_data_cached(_ticker):
+    """Cache the downloaded data, not the connection"""
     url = (
         f"https://learn-api.wqu.edu/1/data-services/alpha-vantage/query?"
         f"function=TIME_SERIES_DAILY&"
-        f"symbol={ticker}&"
-        f"outputsize={output_size}&"
+        f"symbol={_ticker}&"
+        f"outputsize=full&"
         f"datatype=json&"
         f"apikey={ALPHA_API_KEY}"
     )
@@ -61,14 +63,16 @@ def download_stock_data(ticker, output_size="full"):
     df.columns = [c.split(". ")[1] for c in df.columns]
     return df
 
-def wrangle_returns(df, n_observations=2500):
-    df = df.sort_index()
+@st.cache_data
+def wrangle_returns_cached(_prices, _n_obs):
+    """Cache wrangling logic"""
+    df = _prices.sort_index()
     df["return"] = df["close"].pct_change() * 100
     y = df["return"].dropna()
-    return y.iloc[-n_observations:]
+    return y.iloc[-_n_obs:]
 
 # -------------------------------------------------------------------
-# GARCH model function
+# GARCH model function (uncached - expensive operation)
 # -------------------------------------------------------------------
 def fit_garch_model(y, p=1, q=1):
     model = arch_model(y, p=p, q=q, rescale=False)
@@ -89,6 +93,11 @@ n_obs = st.sidebar.slider("Observations", 500, 3000, 2500)
 p_order = st.sidebar.slider("GARCH p", 0, 3, 1)
 q_order = st.sidebar.slider("GARCH q", 0, 3, 1)
 
+# Clear cache button
+if st.sidebar.button("🗑️ Clear Cache"):
+    st.cache_data.clear()
+    st.rerun()
+
 # Main content tabs
 tab1, tab2, tab3 = st.tabs(["🏠 Home", "📊 Analysis", "⚙️ Model Details"])
 
@@ -100,53 +109,65 @@ with tab1:
     - **Measures how "jumpy" the price is** using volatility
     - **Uses GARCH model** to understand how risk changes over time
     - **Shows daily + yearly risk estimates**
-    
-    **Daily volatility** = How much the stock typically moves in 1 day  
-    **Annual volatility** = How much it might move over a full year
     """)
     
     if st.button("🚀 Run Analysis", type="primary"):
         with st.spinner("Analyzing stock volatility..."):
-            conn = get_connection()
+            conn = get_connection()  # NO CACHE HERE
             
-            if use_new_data:
-                with st.status("📥 Downloading fresh data...", expanded=False):
-                    prices = download_stock_data(ticker)
-                    insert_table(conn, ticker, prices)
-            
-            with st.status("🔄 Fitting GARCH model...", expanded=False):
-                prices = read_table(conn, ticker)
-                returns = wrangle_returns(prices, n_obs)
-                model = fit_garch_model(returns, p_order, q_order)
+            try:
+                if use_new_data:
+                    with st.status("📥 Downloading fresh data...", expanded=False):
+                        prices = download_stock_data_cached(ticker)
+                        insert_table(conn, ticker, prices)
+                        st.success("✅ Data saved to database")
                 
-                # Key metrics
-                daily_vol = returns.std()
-                annual_vol = daily_vol * np.sqrt(252)
+                with st.status("📊 Reading data...", expanded=False):
+                    prices = read_table(conn, ticker)
                 
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Daily Volatility (%)", f"{daily_vol:.2f}%")
-                with col2:
-                    st.metric("Annual Volatility (%)", f"{annual_vol:.2f}%")
-                with col3:
-                    st.metric("Model AIC", f"{model.aic:.1f}")
-                with col4:
-                    st.metric("Model BIC", f"{model.bic:.1f}")
+                with st.status("🔄 Fitting GARCH model...", expanded=False):
+                    returns = wrangle_returns_cached(prices, n_obs)
+                    model = fit_garch_model(returns, p_order, q_order)
+                    
+                    # Key metrics
+                    daily_vol = returns.std()
+                    annual_vol = daily_vol * np.sqrt(252)
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Daily Volatility (%)", f"{daily_vol:.2f}%")
+                    with col2:
+                        st.metric("Annual Volatility (%)", f"{annual_vol:.2f}%")
+                    with col3:
+                        st.metric("Model AIC", f"{model.aic:.1f}")
+                    with col4:
+                        st.metric("Model BIC", f"{model.bic:.1f}")
+                    
+                    # Store for other tabs
+                    st.session_state.model = model
+                    st.session_state.returns = returns
+                    st.session_state.prices = prices
+                    
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+            finally:
+                conn.close()
 
 with tab2:
-    if 'model' in locals():
+    if 'model' in st.session_state:
         st.subheader("Price Returns")
-        fig1 = px.line(returns.tail(200), title="Recent Daily Returns (%)")
+        fig1 = px.line(st.session_state.returns.tail(200), title="Recent Daily Returns (%)")
         st.plotly_chart(fig1, use_container_width=True)
         
         st.subheader("Standardized Residuals")
-        residuals = model.std_resid
+        residuals = st.session_state.model.std_resid
         fig2 = px.line(residuals.tail(200), title="GARCH Model Residuals")
         st.plotly_chart(fig2, use_container_width=True)
 
 with tab3:
-    st.subheader("Model Summary")
-    st.text(model.summary().as_text())
+    if 'model' in st.session_state:
+        st.subheader("Model Summary")
+        st.text(st.session_state.model.summary().as_text())
 
 # Footer
 st.markdown("---")
