@@ -99,3 +99,5 @@ if 'results' in st.session_state:
         residuals = st.session_state.results['model'].std_resid.tail(200)
         fig2 = px.line(residuals)
         st.plotly_chart(fig2, use_container_width=True)
+
+st.markdown("*Debug version - WQU Lab 8.5 [file:1]*")
