@@ -7,103 +7,95 @@ from arch import arch_model
 
 st.set_page_config(page_title="Stock Volatility", page_icon="📈", layout="wide")
 
-st.title("📈 Stock Volatility Forecaster")
-st.markdown("**GARCH(1,1) analysis - instant results, no database**")
+st.title("🔍 DEBUG: Stock Volatility Forecaster")
+st.markdown("**Step-by-step GARCH analysis**")
 
 # Sidebar
 st.sidebar.header("⚙️ Settings")
 ticker = st.sidebar.text_input("Ticker", value="AAPL")
-n_obs = st.sidebar.slider("Observations", 100, 3000, 1000)
-p_order = st.sidebar.slider("GARCH p", 0, 3, 1)
-q_order = st.sidebar.slider("GARCH q", 0, 3, 1)
+n_obs = st.sidebar.slider("Observations", 100, 2000, 1000)
 
-# Clear cache
 if st.sidebar.button("🗑️ Clear Cache"):
     st.cache_data.clear()
     st.rerun()
 
-# Main analysis
-if st.button("🚀 Analyze Volatility", type="primary"):
-    with st.spinner("Processing..."):
-        try:
-            # 1. Download data
+# MAIN DEBUG PIPELINE
+if st.button("🔍 RUN FULL DEBUG", type="primary"):
+    st.markdown("---")
+    
+    try:
+        # STEP 1: Raw download
+        with st.status("📥 Step 1: Download raw data", expanded=True):
             @st.cache_data
-            def get_data(_ticker):
-                ticker_obj = yf.Ticker(_ticker)
-                df = ticker_obj.history(period="5y")
-                df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-                df.columns = ['open', 'high', 'low', 'close', 'volume']
-                df['close'] = pd.to_numeric(df['close'], errors='coerce')
-                df = df.dropna()
-                return df
+            def get_raw_data(_ticker):
+                stock = yf.Ticker(_ticker)
+                data = stock.history(period="2y")  # Smaller period for debug
+                return data
             
-            prices = get_data(ticker)
-            st.success(f"✅ Downloaded {len(prices):,} days of {ticker}")
-            
-            # 2. Calculate returns
-            returns = prices['close'].pct_change() * 100
-            returns = returns.dropna()
-            returns = returns[np.isfinite(returns)].tail(n_obs)
-            
-            st.info(f"✅ {len(returns):,} valid returns ready")
-            
-            # 3. Fit GARCH
-            model = arch_model(returns, p=p_order, q=q_order, rescale=False)
-            fitted = model.fit(disp="off")
-            
-            # 4. Metrics
-            daily_vol = returns.std()
-            annual_vol = daily_vol * np.sqrt(252)
-            
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Daily Volatility", f"{daily_vol:.2f}%")
-            col2.metric("Annual Volatility", f"{annual_vol:.2f}%")
-            col3.metric("AIC", f"{fitted.aic:.1f}")
-            col4.metric("BIC", f"{fitted.bic:.1f}")
-            
-            # Store for plots
-            st.session_state.results = {
-                'model': fitted, 
-                'returns': returns, 
-                'prices': prices,
-                'ticker': ticker
-            }
-            
-        except Exception as e:
-            st.error(f"❌ {e}")
-            st.info("Try AAPL, MSFT, TSLA")
-
-# Plots tab
-if 'results' in st.session_state:
-    tab1, tab2 = st.tabs(["📊 Charts", "⚙️ Model"])
-    
-    with tab1:
-        col1, col2 = st.columns(2)
-        with col1:
-            fig1 = px.line(
-                st.session_state.results['returns'].tail(200), 
-                title="Daily Returns (%)"
-            )
-            st.plotly_chart(fig1, use_container_width=True)
+            raw_data = get_raw_data(ticker)
+            st.write(f"**Raw data shape:** {raw_data.shape}")
+            st.write("**Raw columns:**", raw_data.columns.tolist())
+            st.dataframe(raw_data.head())
         
-        with col2:
-            residuals = st.session_state.results['model'].std_resid.tail(200)
-            fig2 = px.line(residuals, title="GARCH Residuals")
-            st.plotly_chart(fig2, use_container_width=True)
+        # STEP 2: Clean prices
+        with st.status("🔧 Step 2: Clean prices", expanded=True):
+            prices = raw_data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+            prices.columns = ['open', 'high', 'low', 'close', 'volume']
+            prices['close'] = pd.to_numeric(prices['close'], errors='coerce')
+            prices = prices.dropna()
+            st.write(f"**Clean prices shape:** {prices.shape}")
+            st.line_chart(prices['close'].tail(100))
+        
+        # STEP 3: Calculate returns
+        with st.status("📊 Step 3: Calculate returns", expanded=True):
+            returns = prices['close'].pct_change() * 100
+            st.write(f"**Raw returns shape:** {returns.shape}")
+            st.line_chart(returns.tail(100))
+            
+            returns_clean = returns.dropna()
+            st.write(f"**Dropna returns:** {len(returns_clean)}")
+            
+            returns_finite = returns_clean[np.isfinite(returns_clean)]
+            st.write(f"**Finite returns:** {len(returns_finite)}")
+            
+            final_returns = returns_finite.tail(n_obs)
+            st.write(f"**FINAL returns for GARCH:** {len(final_returns)}")
+            st.write("**Sample:**", final_returns.tail().tolist())
+        
+        # STEP 4: GARCH if we have data
+        if len(final_returns) > 100:
+            with st.status("🔄 Step 4: Fit GARCH", expanded=True):
+                model = arch_model(final_returns, p=1, q=1, rescale=False)
+                fitted = model.fit(disp="off")
+                
+                daily_vol = final_returns.std()
+                annual_vol = daily_vol * np.sqrt(252)
+                
+                col1, col2 = st.columns(2)
+                col1.metric("Daily Vol", f"{daily_vol:.2f}%")
+                col2.metric("Annual Vol", f"{annual_vol:.2f}%")
+                
+                st.session_state.results = {
+                    'model': fitted, 
+                    'returns': final_returns,
+                    'prices': prices,
+                    'ticker': ticker
+                }
+                st.success("✅ GARCH model fitted!")
+        else:
+            st.error(f"❌ Not enough data: {len(final_returns)} returns")
     
-    with tab2:
-        st.subheader("GARCH Model Summary")
-        st.text(st.session_state.results['model'].summary().as_text())
+    except Exception as e:
+        st.error(f"❌ {e}")
+        st.exception(e)
 
-# Instructions
-with st.expander("ℹ️ What this does (for non-experts)"):
-    st.markdown("""
-    **Simple explanation:**
-    - Stock prices go **up and down daily**
-    - **Volatility** = how much they jump around
-    - **GARCH model** learns patterns in these jumps
-    - **Daily volatility** = typical 1-day move
-    - **Annual volatility** = expected yearly swings
-    
-    **Example:** 2% daily volatility = stock typically moves ±2% per day
-    """)
+# Results
+if 'results' in st.session_state:
+    col1, col2 = st.columns(2)
+    with col1:
+        fig1 = px.line(st.session_state.results['returns'].tail(200))
+        st.plotly_chart(fig1, use_container_width=True)
+    with col2:
+        residuals = st.session_state.results['model'].std_resid.tail(200)
+        fig2 = px.line(residuals)
+        st.plotly_chart(fig2, use_container_width=True)
