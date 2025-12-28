@@ -2,7 +2,7 @@ import os
 import sqlite3
 import numpy as np
 import pandas as pd
-import requests
+import yfinance as yf
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
@@ -12,11 +12,9 @@ from arch import arch_model
 # -------------------------------------------------------------------
 # Configuration
 # -------------------------------------------------------------------
-ALPHA_API_KEY = "4ER5EIUSHD54K72I"
 DB_NAME = "mtn_volatility.db"
 DEFAULT_TICKER = "MTNOY"
 
-# Page config
 st.set_page_config(
     page_title="MTN Volatility Forecaster",
     page_icon="📈",
@@ -35,40 +33,20 @@ def insert_table(connection, table_name, df):
 
 def read_table(connection, table_name):
     query = f"SELECT * FROM {table_name};"
-    df = pd.read_sql(query, connection, parse_dates=["date"], index_col="date")
+    df = pd.read_sql(query, connection, parse_dates=["Date"], index_col="Date")
     return df
 
 # -------------------------------------------------------------------
-# FIXED: WQU API with proper headers
+# FREE Yahoo Finance (no API key needed!)
 # -------------------------------------------------------------------
 @st.cache_data
 def download_stock_data_cached(_ticker):
-    """Download with WQU authentication headers"""
-    url = (
-        f"https://learn-api.wqu.edu/1/data-services/alpha-vantage/query?"
-        f"function=TIME_SERIES_DAILY&"
-        f"symbol={_ticker}&"
-        f"outputsize=full&"
-        f"datatype=json&"
-        f"apikey={ALPHA_API_KEY}"
-    )
-    
-    # WQU requires these headers for authentication
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json',
-        'Referer': 'https://wqu.edu/',
-        'Origin': 'https://wqu.edu'
-    }
-    
-    response = requests.get(url, headers=headers, timeout=30)
-    response.raise_for_status()
-    
-    data = response.json()["Time Series (Daily)"]
-    df = pd.DataFrame.from_dict(data, orient="index", dtype=float)
-    df.index = pd.to_datetime(df.index)
-    df.index.name = "date"
-    df.columns = [c.split(". ")[1] for c in df.columns]
+    """Download from Yahoo Finance - works everywhere"""
+    ticker = yf.Ticker(_ticker)
+    df = ticker.history(period="5y", interval="1d")  # 5 years data
+    df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+    df.columns = ['open', 'high', 'low', 'close', 'volume']
+    df.index.name = 'date'
     return df
 
 @st.cache_data
@@ -79,7 +57,7 @@ def wrangle_returns_cached(_prices, _n_obs):
     return y.iloc[-_n_obs:]
 
 # -------------------------------------------------------------------
-# GARCH model function
+# GARCH model
 # -------------------------------------------------------------------
 def fit_garch_model(y, p=1, q=1):
     model = arch_model(y, p=p, q=q, rescale=False)
@@ -89,10 +67,10 @@ def fit_garch_model(y, p=1, q=1):
 # -------------------------------------------------------------------
 # Main app
 # -------------------------------------------------------------------
-st.title("📈 MTN Stock Volatility Forecaster")
-st.markdown("**How jumpy is MTN Group's stock price? This app analyzes historical prices to estimate daily and yearly risk using a GARCH model.**")
+st.title("📈 Stock Volatility Forecaster")
+st.markdown("**How jumpy is any stock's price? Uses GARCH model on Yahoo Finance data (no API key needed).**")
 
-# Sidebar controls
+# Sidebar
 st.sidebar.header("⚙️ Settings")
 ticker = st.sidebar.text_input("Stock ticker", value=DEFAULT_TICKER)
 use_new_data = st.sidebar.checkbox("Download fresh data", value=True)
@@ -104,34 +82,32 @@ if st.sidebar.button("🗑️ Clear Cache"):
     st.cache_data.clear()
     st.rerun()
 
-# Main content tabs
+# Tabs
 tab1, tab2, tab3 = st.tabs(["🏠 Home", "📊 Analysis", "⚙️ Model Details"])
 
 with tab1:
     st.markdown("""
-    ### What this app does (for non-experts):
-    - **Looks at past stock prices** of MTN Group (or any ticker you choose)
-    - **Calculates daily price changes** (returns) 
-    - **Measures how "jumpy" the price is** using volatility
-    - **Uses GARCH model** to understand how risk changes over time
-    - **Shows daily + yearly risk estimates**
+    ### What this app does:
+    - **Downloads FREE stock data** from Yahoo Finance (works for ANY ticker)
+    - **Calculates daily % changes** (returns) 
+    - **Fits GARCH model** to measure changing volatility
+    - **Shows daily + annual risk** estimates
     """)
     
     if st.button("🚀 Run Analysis", type="primary"):
-        with st.spinner("Analyzing stock volatility..."):
+        with st.spinner("Analyzing volatility..."):
             conn = get_connection()
-            
             try:
                 if use_new_data:
-                    with st.status("📥 Downloading fresh data...", expanded=False):
+                    with st.status("📥 Downloading from Yahoo...", expanded=False):
                         prices = download_stock_data_cached(ticker)
                         insert_table(conn, ticker, prices)
-                        st.success(f"✅ Downloaded {len(prices)} days of {ticker} data")
+                        st.success(f"✅ Got {len(prices):,} days of {ticker}")
                 
-                with st.status("📊 Reading data...", expanded=False):
+                with st.status("📊 Processing...", expanded=False):
                     prices = read_table(conn, ticker)
                 
-                with st.status("🔄 Fitting GARCH model...", expanded=False):
+                with st.status("🔄 Fitting GARCH...", expanded=False):
                     returns = wrangle_returns_cached(prices, n_obs)
                     model = fit_garch_model(returns, p_order, q_order)
                     
@@ -140,38 +116,40 @@ with tab1:
                     
                     col1, col2, col3, col4 = st.columns(4)
                     with col1:
-                        st.metric("Daily Volatility (%)", f"{daily_vol:.2f}%")
+                        st.metric("Daily Volatility", f"{daily_vol:.2f}%")
                     with col2:
-                        st.metric("Annual Volatility (%)", f"{annual_vol:.2f}%")
+                        st.metric("Annual Volatility", f"{annual_vol:.2f}%")
                     with col3:
-                        st.metric("Model AIC", f"{model.aic:.1f}")
+                        st.metric("AIC", f"{model.aic:.1f}")
                     with col4:
-                        st.metric("Model BIC", f"{model.bic:.1f}")
+                        st.metric("BIC", f"{model.bic:.1f}")
                     
                     st.session_state.model = model
                     st.session_state.returns = returns
                     st.session_state.prices = prices
                     
-            except requests.exceptions.HTTPError as e:
-                st.error(f"❌ API Error (401/403): {e}")
-                st.info("🔑 Your WQU API key looks correct. Try a different ticker or check WQU course access.")
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
+                st.info("💡 Try AAPL, MSFT, or TSLA - Yahoo tickers work best")
             finally:
                 conn.close()
 
 with tab2:
     if 'model' in st.session_state:
-        st.subheader("Price Returns")
-        fig1 = px.line(st.session_state.returns.tail(200), title="Recent Daily Returns (%)")
+        st.subheader("Recent Returns")
+        fig1 = px.line(st.session_state.returns.tail(200), 
+                      title="Daily Returns (%)")
         st.plotly_chart(fig1, use_container_width=True)
         
-        st.subheader("Standardized Residuals")
+        st.subheader("GARCH Residuals")
         residuals = st.session_state.model.std_resid
-        fig2 = px.line(residuals.tail(200), title="GARCH Model Residuals")
+        fig2 = px.line(residuals.tail(200), title="Model Residuals")
         st.plotly_chart(fig2, use_container_width=True)
 
 with tab3:
     if 'model' in st.session_state:
-        st.subheader("Model Summary")
+        st.subheader("GARCH Model Summary")
         st.text(st.session_state.model.summary().as_text())
+
+st.markdown("---")
+st.markdown("*WQU Lab 8.5 → Yahoo Finance + GARCH*")
