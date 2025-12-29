@@ -4,8 +4,10 @@ import plotly.express as px
 import streamlit as st
 from arch import arch_model
 import warnings
+
 warnings.filterwarnings('ignore')
 
+# Page Configuration
 st.set_page_config(page_title="Stock Volatility", page_icon="📈", layout="wide")
 
 st.title("🔍 Stock Volatility Forecaster")
@@ -23,28 +25,25 @@ if st.sidebar.button("🔄 Reset"):
     st.cache_data.clear()
     st.rerun()
 
-# FIXED SYNTHETIC DATA GENERATOR (No numpy seed issue)
+# FIXED SYNTHETIC DATA GENERATOR
 @st.cache_data
 def generate_realistic_stock_data(_n_days=1500, _vol_level="Medium"):
-    # FIXED: Use int seed only
-    seed = 42
-    if _vol_level == "Low":
-        seed = 43
-    elif _vol_level == "High":
-        seed = 44
-    
+    # FIX: Use a stable 32-bit integer for the seed to avoid NumPy ValueError
+    seed_map = {"Low": 42, "Medium": 43, "High": 44}
+    seed = seed_map.get(_vol_level, 42)
     np.random.seed(seed)
     
     dates = pd.date_range(start="2023-01-01", periods=_n_days, freq="B")
     
     # Volatility multipliers
     vol_map = {"Low": 0.8, "Medium": 1.2, "High": 1.8}
-    vol_factor = vol_map[_vol_level]
+    vol_factor = vol_map.get(_vol_level, 1.2)
     
     # Generate GARCH-like returns
     returns = []
     current_vol = 1.2
     for i in range(_n_days):
+        # Volatility clustering simulation
         current_vol = 0.1 + 0.7 * current_vol + 0.2 * abs(np.random.normal(0, 1))
         ret = np.random.normal(0.0002, current_vol * vol_factor * 0.015)
         returns.append(ret)
@@ -95,12 +94,13 @@ if st.button("🚀 RUN GARCH ANALYSIS", type="primary"):
 
             # STEP 3: GARCH
             with st.status("🔬 Fitting GARCH(1,1)", expanded=True):
+                # ARCH model usually requires returns in percentage for stability
                 model = arch_model(returns_final.values, p=1, q=1, rescale=False)
                 fitted = model.fit(disp="off", show_warning=False)
                 
                 # Metrics
                 cond_vol = fitted.conditional_volatility
-                daily_vol = np.sqrt(np.mean(cond_vol**2)) * 100
+                daily_vol = np.sqrt(np.mean(cond_vol**2))
                 annual_vol = daily_vol * np.sqrt(252)
                 
                 col1, col2, col3 = st.columns(3)
@@ -108,7 +108,7 @@ if st.button("🚀 RUN GARCH ANALYSIS", type="primary"):
                 col2.metric("Annual Vol", f"{annual_vol:.2f}%")
                 col3.metric("AIC", f"{fitted.aic:.1f}")
                 
-                # Store safely
+                # Store in session state
                 st.session_state.results = {
                     'model': fitted,
                     'returns': returns_final,
@@ -126,33 +126,33 @@ if st.button("🚀 RUN GARCH ANALYSIS", type="primary"):
             st.error(f"Error: {str(e)}")
             st.exception(e)
 
-# RESULTS
+# RESULTS DISPLAY
 if 'results' in st.session_state:
     st.markdown("---")
     st.header("📊 Results")
     
     col1, col2 = st.columns(2)
     with col1:
+        # Plotly chart for returns
         fig1 = px.line(st.session_state.results['returns'].tail(300), 
                       title="Returns (%)")
         st.plotly_chart(fig1, use_container_width=True)
     
     with col2:
-        vol_pct = st.session_state.results['volatility'].tail(300) * 100
-        fig2 = px.line(vol_pct, title="GARCH Volatility (%)")
+        # Plotly chart for GARCH volatility
+        vol_data = st.session_state.results['volatility'][-300:]
+        fig2 = px.line(y=vol_data, title="GARCH Conditional Volatility (%)")
         st.plotly_chart(fig2, use_container_width=True)
     
-    # Forecast
-    st.subheader("🔮 Forecast")
+    # Forecast section
+    st.subheader("🔮 5-Day Volatility Forecast")
     try:
         forecast = st.session_state.results['model'].forecast(horizon=5)
-        vol_fc = np.sqrt(forecast.variance.iloc[-1].values) * 100
+        # Variance to Volatility (sqrt)
+        vol_fc = np.sqrt(forecast.variance.iloc[-1].values)
         cols = st.columns(5)
         for i, vol in enumerate(vol_fc):
             with cols[i]:
                 st.metric(f"Day {i+1}", f"{vol:.2f}%")
-    except:
-        st.info("Forecast available after model fit")
-
-st.markdown("---")
-st.caption("🎓 WQU Lab 8.5 - Fixed numpy seed + offline GARCH")
+    except Exception:
+        st.info("Forecast unavailable for this data slice.")
