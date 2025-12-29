@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="Stock Volatility", page_icon="📈", layout="wide")
 
 st.title("🔍 Stock Volatility Forecaster")
-st.markdown("**GARCH(1,1) - FIXED & OFFLINE**")
+st.markdown("**GARCH(1,1) - BITMASK SEED APPROACH**")
 
 # Sidebar
 st.sidebar.header("⚙️ Settings")
@@ -24,25 +24,22 @@ if st.sidebar.button("🔄 Reset"):
     st.cache_data.clear()
     st.rerun()
 
-# FIXED SYNTHETIC DATA GENERATOR
+# NEW APPROACH: BITMASKING THE SEED
 @st.cache_data
 def generate_realistic_stock_data(_n_days=1500, _vol_level="Medium"):
-    # FIX: Use a stable mapping instead of hash() to avoid 32-bit overflow errors
-    seed_map = {"Low": 42, "Medium": 43, "High": 44}
-    seed = seed_map.get(_vol_level, 42)
-    np.random.seed(seed)
+    # NEW APPROACH: Bitwise AND with 0xFFFFFFFF forces the value into 32-bit range
+    # This prevents the NumPy ValueError while keeping the seed unique to the string
+    stable_seed = hash(_vol_level) & 0xFFFFFFFF 
+    np.random.seed(stable_seed)
     
     dates = pd.date_range(start="2023-01-01", periods=_n_days, freq="B")
     
-    # Volatility multipliers
     vol_map = {"Low": 0.8, "Medium": 1.2, "High": 1.8}
     vol_factor = vol_map.get(_vol_level, 1.2)
     
-    # Generate GARCH-like returns
     returns = []
     current_vol = 1.2
     for i in range(_n_days):
-        # Simulation of volatility clustering
         current_vol = 0.1 + 0.7 * current_vol + 0.2 * abs(np.random.normal(0, 1))
         ret = np.random.normal(0.0002, current_vol * vol_factor * 0.015)
         returns.append(ret)
@@ -50,7 +47,6 @@ def generate_realistic_stock_data(_n_days=1500, _vol_level="Medium"):
     log_returns = np.array(returns)
     price = 150 * np.exp(np.cumsum(log_returns))
     
-    # OHLCV data
     n = len(dates)
     data = pd.DataFrame(index=dates, data={
         'Open':   price * (1 + np.random.normal(0, 0.002, n)),
@@ -91,12 +87,11 @@ if st.button("🚀 RUN GARCH ANALYSIS", type="primary"):
                 st.metric("Valid Returns", len(returns_final))
                 st.line_chart(returns_final.tail(200))
 
-            # STEP 3: GARCH
+            # STEP 3: GARCH Fitting
             with st.status("🔬 Fitting GARCH(1,1)", expanded=True):
                 model = arch_model(returns_final.values, p=1, q=1, rescale=False)
                 fitted = model.fit(disp="off", show_warning=False)
                 
-                # Metrics
                 cond_vol = fitted.conditional_volatility
                 daily_vol = np.sqrt(np.mean(cond_vol**2))
                 annual_vol = daily_vol * np.sqrt(252)
@@ -106,51 +101,41 @@ if st.button("🚀 RUN GARCH ANALYSIS", type="primary"):
                 col2.metric("Annual Vol", f"{annual_vol:.2f}%")
                 col3.metric("AIC", f"{fitted.aic:.1f}")
                 
-                # Store results safely in session state
                 st.session_state.results = {
                     'model': fitted,
                     'returns': returns_final,
-                    'prices': prices,
-                    'volatility': cond_vol,
-                    'metrics': {'daily': daily_vol, 'annual': annual_vol}
+                    'volatility': cond_vol
                 }
                 
                 with st.expander("Model Coefficients"):
                     st.code(str(fitted.params.round(4)))
                 
-                st.success("✅ GARCH Analysis Complete!")
+                st.success("✅ Analysis Complete!")
 
         except Exception as e:
             st.error(f"Error: {str(e)}")
-            st.exception(e)
 
-# RESULTS SECTION
+# RESULTS
 if 'results' in st.session_state:
     st.markdown("---")
     st.header("📊 Results")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        fig1 = px.line(st.session_state.results['returns'].tail(300), 
-                      title="Returns (%)")
-        st.plotly_chart(fig1, use_container_width=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.plotly_chart(px.line(st.session_state.results['returns'].tail(300), title="Returns (%)"), use_container_width=True)
+    with c2:
+        vol_tail = st.session_state.results['volatility'][-300:]
+        st.plotly_chart(px.line(y=vol_tail, title="GARCH Volatility (%)"), use_container_width=True)
     
-    with col2:
-        vol_data = st.session_state.results['volatility'][-300:]
-        fig2 = px.line(y=vol_data, title="GARCH Volatility (%)")
-        st.plotly_chart(fig2, use_container_width=True)
-    
-    # Forecast Section
     st.subheader("🔮 5-Day Volatility Forecast")
     try:
         forecast = st.session_state.results['model'].forecast(horizon=5)
         vol_fc = np.sqrt(forecast.variance.iloc[-1].values)
         cols = st.columns(5)
-        for i, vol in enumerate(vol_fc):
-            with cols[i]:
-                st.metric(f"Day {i+1}", f"{vol:.2f}%")
+        for i, v in enumerate(vol_fc):
+            cols[i].metric(f"Day {i+1}", f"{v:.2f}%")
     except:
-        st.info("Forecast available after model fit")
+        st.info("Fit the model to see forecasts.")
 
 st.markdown("---")
-st.caption("🎓 WQU Lab 8.5 - Fixed Seed & Stable Pipeline")
+st.caption("🎓 WQU Lab 8.5 - Programmatic Bitmask Seed Approach")
