@@ -7,7 +7,6 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-# Page Configuration
 st.set_page_config(page_title="Stock Volatility", page_icon="📈", layout="wide")
 
 st.title("🔍 Stock Volatility Forecaster")
@@ -28,7 +27,7 @@ if st.sidebar.button("🔄 Reset"):
 # FIXED SYNTHETIC DATA GENERATOR
 @st.cache_data
 def generate_realistic_stock_data(_n_days=1500, _vol_level="Medium"):
-    # FIX: Use a stable 32-bit integer for the seed to avoid NumPy ValueError
+    # FIX: Use a stable mapping instead of hash() to avoid 32-bit overflow
     seed_map = {"Low": 42, "Medium": 43, "High": 44}
     seed = seed_map.get(_vol_level, 42)
     np.random.seed(seed)
@@ -43,7 +42,7 @@ def generate_realistic_stock_data(_n_days=1500, _vol_level="Medium"):
     returns = []
     current_vol = 1.2
     for i in range(_n_days):
-        # Volatility clustering simulation
+        # Simulation of volatility clustering
         current_vol = 0.1 + 0.7 * current_vol + 0.2 * abs(np.random.normal(0, 1))
         ret = np.random.normal(0.0002, current_vol * vol_factor * 0.015)
         returns.append(ret)
@@ -94,7 +93,6 @@ if st.button("🚀 RUN GARCH ANALYSIS", type="primary"):
 
             # STEP 3: GARCH
             with st.status("🔬 Fitting GARCH(1,1)", expanded=True):
-                # ARCH model usually requires returns in percentage for stability
                 model = arch_model(returns_final.values, p=1, q=1, rescale=False)
                 fitted = model.fit(disp="off", show_warning=False)
                 
@@ -108,7 +106,7 @@ if st.button("🚀 RUN GARCH ANALYSIS", type="primary"):
                 col2.metric("Annual Vol", f"{annual_vol:.2f}%")
                 col3.metric("AIC", f"{fitted.aic:.1f}")
                 
-                # Store in session state
+                # Store safely
                 st.session_state.results = {
                     'model': fitted,
                     'returns': returns_final,
@@ -126,33 +124,30 @@ if st.button("🚀 RUN GARCH ANALYSIS", type="primary"):
             st.error(f"Error: {str(e)}")
             st.exception(e)
 
-# RESULTS DISPLAY
+# RESULTS
 if 'results' in st.session_state:
     st.markdown("---")
     st.header("📊 Results")
     
     col1, col2 = st.columns(2)
     with col1:
-        # Plotly chart for returns
         fig1 = px.line(st.session_state.results['returns'].tail(300), 
                       title="Returns (%)")
         st.plotly_chart(fig1, use_container_width=True)
     
     with col2:
-        # Plotly chart for GARCH volatility
-        vol_data = st.session_state.results['volatility'][-300:]
-        fig2 = px.line(y=vol_data, title="GARCH Conditional Volatility (%)")
+        vol_pct = st.session_state.results['volatility'][-300:]
+        fig2 = px.line(y=vol_pct, title="GARCH Volatility (%)")
         st.plotly_chart(fig2, use_container_width=True)
     
-    # Forecast section
-    st.subheader("🔮 5-Day Volatility Forecast")
+    # Forecast
+    st.subheader("🔮 Forecast")
     try:
         forecast = st.session_state.results['model'].forecast(horizon=5)
-        # Variance to Volatility (sqrt)
         vol_fc = np.sqrt(forecast.variance.iloc[-1].values)
         cols = st.columns(5)
         for i, vol in enumerate(vol_fc):
             with cols[i]:
                 st.metric(f"Day {i+1}", f"{vol:.2f}%")
-    except Exception:
-        st.info("Forecast unavailable for this data slice.")
+    except:
+        st.info("Forecast available after model fit")
