@@ -27,7 +27,7 @@ if st.sidebar.button("🔄 Reset"):
 # FIXED SYNTHETIC DATA GENERATOR
 @st.cache_data
 def generate_realistic_stock_data(_n_days=1500, _vol_level="Medium"):
-    # FIX: Use a stable mapping instead of hash() to avoid 32-bit overflow
+    # FIX: Use a stable mapping instead of hash() to avoid 32-bit overflow errors
     seed_map = {"Low": 42, "Medium": 43, "High": 44}
     seed = seed_map.get(_vol_level, 42)
     np.random.seed(seed)
@@ -106,7 +106,7 @@ if st.button("🚀 RUN GARCH ANALYSIS", type="primary"):
                 col2.metric("Annual Vol", f"{annual_vol:.2f}%")
                 col3.metric("AIC", f"{fitted.aic:.1f}")
                 
-                # Store safely
+                # Store results safely in session state
                 st.session_state.results = {
                     'model': fitted,
                     'returns': returns_final,
@@ -124,7 +124,7 @@ if st.button("🚀 RUN GARCH ANALYSIS", type="primary"):
             st.error(f"Error: {str(e)}")
             st.exception(e)
 
-# RESULTS
+# RESULTS SECTION
 if 'results' in st.session_state:
     st.markdown("---")
     st.header("📊 Results")
@@ -136,12 +136,12 @@ if 'results' in st.session_state:
         st.plotly_chart(fig1, use_container_width=True)
     
     with col2:
-        vol_pct = st.session_state.results['volatility'][-300:]
-        fig2 = px.line(y=vol_pct, title="GARCH Volatility (%)")
+        vol_data = st.session_state.results['volatility'][-300:]
+        fig2 = px.line(y=vol_data, title="GARCH Volatility (%)")
         st.plotly_chart(fig2, use_container_width=True)
     
-    # Forecast
-    st.subheader("🔮 Forecast")
+    # Forecast Section
+    st.subheader("🔮 5-Day Volatility Forecast")
     try:
         forecast = st.session_state.results['model'].forecast(horizon=5)
         vol_fc = np.sqrt(forecast.variance.iloc[-1].values)
@@ -151,3 +151,6 @@ if 'results' in st.session_state:
                 st.metric(f"Day {i+1}", f"{vol:.2f}%")
     except:
         st.info("Forecast available after model fit")
+
+st.markdown("---")
+st.caption("🎓 WQU Lab 8.5 - Fixed Seed & Stable Pipeline")
