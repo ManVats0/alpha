@@ -137,5 +137,3 @@ if 'results' in st.session_state:
     except:
         st.info("Fit the model to see forecasts.")
 
-st.markdown("---")
-st.caption("🎓 WQU Lab 8.5 - Programmatic Bitmask Seed Approach")
