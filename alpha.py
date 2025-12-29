@@ -25,11 +25,12 @@ if st.sidebar.button("🔄 Reset"):
     st.cache_data.clear()
     st.rerun()
 
-# 2. Data Generator
+# 2. FIXED Data Generator
 @st.cache_data
 def generate_realistic_stock_data(_n_days=1500, _vol_level="Medium"):
-    stable_seed = hash(_vol_level) & 0xFFFFFFFF 
-    np.random.seed(stable_seed)
+    # FIXED: Simple integer seed
+    seed_map = {"Low": 42, "Medium": 43, "High": 44}
+    np.random.seed(seed_map.get(_vol_level, 43))
     
     dates = pd.date_range(start="2023-01-01", periods=_n_days, freq="B")
     vol_map = {"Low": 0.8, "Medium": 1.2, "High": 1.8}
@@ -55,81 +56,153 @@ def generate_realistic_stock_data(_n_days=1500, _vol_level="Medium"):
     
     return data.dropna()
 
-# 3. Analysis Pipeline
+# 3. ENHANCED Analysis Pipeline
 if st.button("🚀 RUN GARCH ANALYSIS", type="primary"):
-    with st.spinner("Analyzing..."):
+    with st.spinner("Running full GARCH pipeline..."):
         try:
-            with st.status("📊 Processing Data & Model", expanded=True):
+            # STEP 1: Data Generation
+            with st.status("📊 Generating data", expanded=True):
                 raw_data = generate_realistic_stock_data(1500, vol_level)
-                returns = raw_data['Close'].pct_change() * 100
-                returns_final = returns.dropna().tail(n_obs)
                 
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Days", len(raw_data))
+                with col2:
+                    st.metric("Final Price", f"${raw_data['Close'].iloc[-1]:,.2f}")
+                with col3:
+                    total_ret = (raw_data['Close'].iloc[-1] / raw_data['Close'].iloc[0] - 1) * 100
+                    st.metric("Total Return", f"{total_ret:.1f}%")
+                
+                st.line_chart(raw_data['Close'].tail(200), height=300)
+
+            # STEP 2: Returns Processing  
+            with st.status("📈 Processing returns", expanded=True):
+                returns = raw_data['Close'].pct_change() * 100
+                returns_clean = returns.dropna()
+                returns_final = returns_clean[np.isfinite(returns_clean)].tail(n_obs)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Valid Returns", len(returns_final))
+                    st.metric("Return Std", f"{returns_final.std():.2f}%")
+                with col2:
+                    st.line_chart(returns_final.tail(200), height=300)
+
+            # STEP 3: GARCH Model
+            with st.status("🔬 Fitting GARCH(1,1)", expanded=True):
                 model = arch_model(returns_final.values, p=1, q=1, rescale=False)
                 fitted = model.fit(disp="off", show_warning=False)
                 
                 cond_vol = fitted.conditional_volatility
-                daily_vol = np.sqrt(np.mean(cond_vol**2))
+                daily_vol = np.sqrt(np.mean(cond_vol**2)) * 100
+                annual_vol = daily_vol * np.sqrt(252)
                 
-                # Store results for the UI and the Chatbot
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Daily Vol", f"{daily_vol:.2f}%")
+                col2.metric("Annual Vol", f"{annual_vol:.2f}%")
+                col3.metric("Model AIC", f"{fitted.aic:.1f}")
+                
+                # Forecast
+                forecast = fitted.forecast(horizon=5)
+                forecast_vol = np.sqrt(forecast.variance.iloc[-1].values) * 100
+                
+                # Store COMPLETE results
                 st.session_state.results = {
                     'model': fitted,
                     'returns': returns_final,
+                    'raw_data': raw_data,
                     'volatility': cond_vol,
                     'ticker': ticker,
-                    'annual_vol': daily_vol * np.sqrt(252),
-                    'forecast': np.sqrt(fitted.forecast(horizon=5).variance.iloc[-1].values)
+                    'daily_vol': daily_vol,
+                    'annual_vol': annual_vol,
+                    'forecast_vol': forecast_vol,
+                    'current_vol': float(cond_vol[-1]),
+                    'avg_vol': float(np.mean(cond_vol))
                 }
-            st.success("Analysis Complete!")
+                
+                with st.expander("🔍 Model Parameters"):
+                    st.code(str(fitted.params.round(4)), language="text")
+                
+            st.success("🎉 Full GARCH Analysis Complete!")
+            
         except Exception as e:
-            st.error(f"Error: {str(e)}")
+            st.error(f"❌ Pipeline Error: {str(e)}")
+            st.exception(e)
 
-# 4. Results Display
+# 4. COMPREHENSIVE Results Display
 if 'results' in st.session_state:
+    res = st.session_state.results
     st.markdown("---")
-    st.header(f"📊 Market Insights: {st.session_state.results['ticker']}")
+    st.header(f"📊 {res['ticker']} - GARCH Analysis")
     
-    c1, c2 = st.columns(2)
-    with c1:
-        st.plotly_chart(px.line(st.session_state.results['returns'].tail(300), title="Recent Returns (%)"), use_container_width=True)
-    with c2:
-        vol_tail = st.session_state.results['volatility'][-300:]
-        st.plotly_chart(px.line(y=vol_tail, title="Conditional Volatility (%)"), use_container_width=True)
-
-    # 5. Chatbot Interface
-    st.markdown("---")
-    st.header("🤖 AI Investment Risk Advisor")
+    # Charts Row 1
+    col1, col2 = st.columns(2)
+    with col1:
+        fig1 = px.line(res['returns'].tail(300), title="Daily Returns (%)")
+        st.plotly_chart(fig1, use_container_width=True)
     
-    if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": f"I've analyzed {ticker}. Ask me about the risks or if it's a good time to buy!"}]
+    with col2:
+        vol_pct = res['volatility'].tail(300) * 100
+        fig2 = px.line(vol_pct, title="GARCH Conditional Volatility (%)")
+        st.plotly_chart(fig2, use_container_width=True)
+    
+    # Key Metrics Row
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Current Vol", f"{res['current_vol']:.2f}%")
+    col2.metric("Avg Vol", f"{res['avg_vol']:.2f}%")
+    col3.metric("Daily Vol", f"{res['daily_vol']:.2f}%")
+    col4.metric("Annual Vol", f"{res['annual_vol']:.2f}%")
+    
+    # 5-Day Forecast
+    st.subheader("🔮 5-Day Volatility Forecast")
+    forecast_cols = st.columns(5)
+    for i, vol in enumerate(res['forecast_vol']):
+        with forecast_cols[i]:
+            st.metric(f"Day {i+1}", f"{vol:.2f}%")
 
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+# 5. ENHANCED Chatbot Interface
+st.markdown("---")
+st.header("🤖 AI Investment Risk Advisor")
 
-    if prompt := st.chat_input("Should I buy this stock?"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-        with st.chat_message("assistant"):
-            # Context-Aware Logic for the "LLM" response
+# Display chat messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Chat input
+if prompt := st.chat_input("Ask about risks, buy/sell timing, or portfolio strategy..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        if 'results' in st.session_state:
             res = st.session_state.results
-            current_vol = res['volatility'][-1]
-            avg_vol = np.mean(res['volatility'])
-            forecast_trend = "increasing" if res['forecast'][-1] > res['forecast'][0] else "stabilizing"
+            prompt_lower = prompt.lower()
             
-            # Simple Logic-based Advisor (Can be replaced with actual OpenAI/Gemini API call)
-            if "buy" in prompt.lower() or "good choice" in prompt.lower():
-                if current_vol < avg_vol:
-                    response = f"Based on GARCH(1,1), current volatility ({current_vol:.2f}%) is below the historical average. This suggests a period of relative calm, which could be a entry point if you have a high risk tolerance. However, the 5-day forecast shows volatility is {forecast_trend}."
+            if any(word in prompt_lower for word in ["buy", "purchase", "long"]):
+                if res['current_vol'] < res['avg_vol']:
+                    trend = "stabilizing" if res['forecast_vol'][-1] < res['forecast_vol'][0] else "rising"
+                    response = f"**🟢 BUY SIGNAL**: Current vol {res['current_vol']:.2f}% < average {res['avg_vol']:.2f}%. Good entry point. 5-day forecast shows {trend} volatility."
                 else:
-                    response = f"Caution: Current volatility ({current_vol:.2f}%) is higher than average. High volatility often precedes price swings. It might be better to wait for the GARCH model to show signs of stabilizing."
-            elif "risk" in prompt.lower():
-                response = f"The annual volatility is currently estimated at {res['annual_vol']:.2f}%. Your 'Day 5' projected risk is {res['forecast'][-1]:.2f}%. This is considered a '{vol_level}' risk profile."
-            else:
-                response = "I can analyze the GARCH results for you. Try asking 'Is it a good time to buy?' or 'What is the risk forecast?'"
+                    response = f"**🟡 CAUTION**: Current vol {res['current_vol']:.2f}% > average. Wait for volatility to drop below {res['avg_vol']:.2f}%."
             
-            st.markdown(response)
-            st.session_state.messages.append({"role": "assistant", "content": response})
-
-# Footer Removal: No st.caption or st.markdown footer added here.
+            elif any(word in prompt_lower for word in ["sell", "short", "exit"]):
+                response = f"**🔴 SELL if**: Volatility spikes above {res['daily_vol']+10:.1f}% or forecast shows sustained increase."
+            
+            elif "risk" in prompt_lower or "volatility" in prompt_lower:
+                response = f"**Risk Profile**: {vol_level.upper()} volatility. Annual risk: {res['annual_vol']:.1f}%. Current daily risk: {res['current_vol']:.2f}%."
+            
+            elif "portfolio" in prompt_lower:
+                response = f"For {ticker}: Allocate **{min(30, 100-int(res['annual_vol']))}%** of portfolio. Use stop-loss at 2x current volatility ({res['current_vol']*2:.1f}%)."
+            
+            else:
+                response = f"GARCH shows {res['current_vol']:.2f}% current volatility vs {res['avg_vol']:.2f}% average. Ask me 'Should I buy?' or 'What is the risk?'"
+        else:
+            response = "Please run the GARCH analysis first, then ask about investment decisions!"
+        
+        st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
