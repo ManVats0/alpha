@@ -98,12 +98,12 @@ if st.button("🚀 RUN GARCH ANALYSIS", type="primary"):
                 'model': fitted,
                 'returns': returns_final,
                 'raw_data': raw_data,
-                'volatility': pd.Series(cond_vol.values),
+                'volatility': cond_vol,  # Keep as numpy array
                 'ticker': ticker,
                 'daily_vol': daily_vol,
                 'annual_vol': annual_vol,
                 'forecast_vol': forecast_vol,
-                'current_vol': float(cond_vol.iloc[-1]),
+                'current_vol': float(cond_vol[-1]),  # Use array indexing
                 'avg_vol': float(np.mean(cond_vol))
             }
             
@@ -126,7 +126,7 @@ if 'results' in st.session_state:
         st.plotly_chart(fig1, use_container_width=True)
     
     with col2:
-        vol_pct = res['volatility'].tail(300).values * 100
+        vol_pct = res['volatility'][-300:] * 100  # FIXED: Direct numpy array slicing
         fig2 = px.line(x=range(len(vol_pct)), y=vol_pct, title="GARCH Volatility (%)")
         st.plotly_chart(fig2, use_container_width=True)
     
